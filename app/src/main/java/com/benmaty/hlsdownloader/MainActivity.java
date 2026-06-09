@@ -34,7 +34,7 @@ public class MainActivity extends AppCompatActivity {
     private void downloadHLS(String m3u8Url, TextView status, Button btn) {
         try {
             String fileName = "video_" + new SimpleDateFormat("yyyyMMdd_HHmmss",
-                Locale.getDefault()).format(new Date()) + ".ts";
+                Locale.getDefault()).format(new Date()) + ".mp4";
             File outFile = new File(Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS), fileName);
 
@@ -97,7 +97,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 if (line.endsWith(".m3u8")) {
                     lastM3u8 = line;
-                } else if (line.endsWith(".ts") || line.contains(".ts?")) {
+                } else if (line.endsWith(".mp4") || line.contains(".ts?")) {
                     segments.add(line);
                 }
             }
