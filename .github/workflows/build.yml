@@ -22,9 +22,8 @@ jobs:
       - name: Download ffmpeg binary for Android ARM64
         run: |
           mkdir -p app/src/main/assets
-          wget -q "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-arm64" -O app/src/main/assets/ffmpeg || \
-          wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -O /tmp/ffmpeg.tar.xz && \
-          tar -xf /tmp/ffmpeg.tar.xz -C /tmp && \
+          wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz" -O /tmp/ffmpeg.tar.xz
+          tar -xf /tmp/ffmpeg.tar.xz -C /tmp
           cp /tmp/ffmpeg-*-arm64-static/ffmpeg app/src/main/assets/ffmpeg
           chmod +x app/src/main/assets/ffmpeg
 
@@ -35,14 +34,35 @@ jobs:
           sudo mv gradle-8.2 /opt/gradle
           echo "/opt/gradle/bin" >> $GITHUB_PATH
 
-      - name: Build APK
+      - name: Generate keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore app/keystore.jks \
+            -alias hlskey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass hlspassword \
+            -keypass hlspassword \
+            -dname "CN=Benmaty, OU=Dev, O=HLS, L=Paris, S=IDF, C=FR"
+
+      - name: Build & Sign APK
         run: |
           gradle wrapper
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleRelease
+
+          # Signer l'APK
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks app/keystore.jks \
+            --ks-key-alias hlskey \
+            --ks-pass pass:hlspassword \
+            --key-pass pass:hlspassword \
+            --out app/build/outputs/apk/release/app-release-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: HLS-Downloader
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/release/app-release-signed.apk
