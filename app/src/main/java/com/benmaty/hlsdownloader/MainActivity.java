@@ -22,12 +22,12 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        EditText urlInput = findViewById(R.id.urlInput);
-        Button btnDownload = findViewById(R.id.btnDownload);
-        Button btnPaste = findViewById(R.id.btnPaste);
-        Button btnOpen = findViewById(R.id.btnOpen);
-        TextView status = findViewById(R.id.status);
-        ProgressBar progressBar = findViewById(R.id.progressBar);
+        EditText urlInput    = findViewById(R.id.urlInput);
+        Button btnDownload   = findViewById(R.id.btnDownload);
+        Button btnPaste      = findViewById(R.id.btnPaste);
+        Button btnOpen       = findViewById(R.id.btnOpen);
+        TextView status      = findViewById(R.id.status);
+        ProgressBar pb       = findViewById(R.id.progressBar);
         ListView historyList = findViewById(R.id.historyList);
 
         historyAdapter = new ArrayAdapter<>(this,
@@ -36,8 +36,11 @@ public class MainActivity extends AppCompatActivity {
 
         btnPaste.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
-                urlInput.setText(cm.getPrimaryClip().getItemAt(0).getText().toString().trim());
+            if (cm != null && cm.hasPrimaryClip() &&
+                cm.getPrimaryClip().getItemCount() > 0) {
+                String txt = cm.getPrimaryClip().getItemAt(0)
+                    .getText().toString().trim();
+                urlInput.setText(txt);
                 status.setText("📋 Lien collé !");
             }
         });
@@ -47,10 +50,10 @@ public class MainActivity extends AppCompatActivity {
             if (lastDownloadedFile != null && lastDownloadedFile.exists()) {
                 Uri uri = FileProvider.getUriForFile(this,
                     getPackageName() + ".provider", lastDownloadedFile);
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                intent.setDataAndType(uri, "video/*");
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(intent, "Ouvrir avec..."));
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(uri, "video/*");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(i, "Ouvrir avec..."));
             }
         });
 
@@ -58,234 +61,242 @@ public class MainActivity extends AppCompatActivity {
             String url = urlInput.getText().toString().trim();
             if (url.isEmpty()) { status.setText("⚠️ Colle un lien !"); return; }
             btnOpen.setVisibility(android.view.View.GONE);
-            progressBar.setProgress(0);
-            progressBar.setVisibility(android.view.View.VISIBLE);
+            pb.setProgress(0);
+            pb.setVisibility(android.view.View.VISIBLE);
             status.setText("⏳ Démarrage...");
             btnDownload.setEnabled(false);
-
             new Thread(() -> {
-                if (url.contains(".m3u8")) {
-                    downloadHLS(url, status, btnDownload, btnOpen, progressBar);
-                } else {
-                    downloadDirect(url, status, btnDownload, btnOpen, progressBar);
-                }
+                if (url.contains(".m3u8")) downloadHLS(url, status, btnDownload, btnOpen, pb);
+                else                       downloadDirect(url, status, btnDownload, btnOpen, pb);
             }).start();
         });
     }
 
+    /* ── Téléchargement direct (mp4, mkv…) ── */
     private void downloadDirect(String urlStr, TextView status, Button btn,
-                                  Button btnOpen, ProgressBar pb) {
+                                Button btnOpen, ProgressBar pb) {
         try {
             String ext = getExtension(urlStr);
             String fileName = "video_" + timestamp() + "." + ext;
-            File outFile = new File(Environment.getExternalStoragePublicDirectory(
+            File out = new File(Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS), fileName);
 
             HttpURLConnection conn = openConnection(urlStr);
             int total = conn.getContentLength();
             try (InputStream is = conn.getInputStream();
-                 FileOutputStream fos = new FileOutputStream(outFile)) {
-                byte[] buf = new byte[8192];
-                int len, downloaded = 0;
+                 FileOutputStream fos = new FileOutputStream(out)) {
+                byte[] buf = new byte[8192]; int len, dl = 0;
                 while ((len = is.read(buf)) > 0) {
-                    fos.write(buf, 0, len);
-                    downloaded += len;
+                    fos.write(buf, 0, len); dl += len;
                     if (total > 0) {
-                        int pct = (int)(downloaded * 100L / total);
-                        runOnUiThread(() -> {
-                            pb.setProgress(pct);
-                            status.setText("⏳ " + pct + "%");
-                        });
+                        int pct = (int)(dl * 100L / total);
+                        runOnUiThread(() -> { pb.setProgress(pct);
+                            status.setText("⏳ " + pct + "%"); });
                     }
                 }
             }
-            lastDownloadedFile = outFile;
-            addToHistory(fileName);
-            runOnUiThread(() -> {
-                btn.setEnabled(true);
-                pb.setProgress(100);
-                status.setText("✅ Sauvegardé !\n" + fileName);
-                btnOpen.setVisibility(android.view.View.VISIBLE);
-            });
-        } catch (Exception e) {
-            runOnUiThread(() -> {
-                btn.setEnabled(true);
-                status.setText("❌ Erreur : " + e.getMessage());
-            });
-        }
+            finishOk(out, fileName, status, btn, btnOpen, pb);
+        } catch (Exception e) { finishErr(e.getMessage(), status, btn); }
     }
 
+    /* ── Téléchargement HLS ── */
     private void downloadHLS(String m3u8Url, TextView status, Button btn,
-                               Button btnOpen, ProgressBar pb) {
+                             Button btnOpen, ProgressBar pb) {
         try {
-            // Étape 1 : récupérer les segments
-            runOnUiThread(() -> status.setText("⏳ Lecture du m3u8..."));
-            List<String> segments = parseM3U8(m3u8Url);
+            runOnUiThread(() -> status.setText("⏳ Lecture m3u8..."));
 
+            // 1. Parser la playlist
+            List<String> segments = parseM3U8(m3u8Url);
             if (segments.isEmpty()) {
-                runOnUiThread(() -> {
-                    btn.setEnabled(true);
-                    status.setText("❌ Aucun segment trouvé dans le m3u8");
-                });
-                return;
+                finishErr("Aucun segment trouvé", status, btn); return;
             }
 
-            runOnUiThread(() -> status.setText("⏳ " + segments.size() + " segments trouvés..."));
+            // 2. Afficher le 1er segment pour debug
+            String firstSeg = segments.get(0);
+            runOnUiThread(() -> status.setText(
+                "🔍 " + segments.size() + " segments\n1er: " + firstSeg.substring(
+                    Math.max(0, firstSeg.length()-60))));
 
-            String fileName = "video_" + timestamp() + ".mp4";
-            File outFile = new File(Environment.getExternalStoragePublicDirectory(
+            // Pause 2s pour lire le debug
+            Thread.sleep(2000);
+
+            String fileName = "video_" + timestamp() + ".ts";
+            File out = new File(Environment.getExternalStoragePublicDirectory(
                 Environment.DIRECTORY_DOWNLOADS), fileName);
 
             String baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+            byte[] buf = new byte[16384];
+            long totalBytes = 0;
+            int count = 0, total = segments.size();
+            int failCount = 0;
 
-            try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                byte[] buf = new byte[8192];
-                int count = 0, total = segments.size();
-
+            try (FileOutputStream fos = new FileOutputStream(out)) {
                 for (String seg : segments) {
-                    // Construire l'URL absolue du segment
-                    String segUrl;
-                    if (seg.startsWith("http://") || seg.startsWith("https://")) {
-                        segUrl = seg;
-                    } else if (seg.startsWith("/")) {
-                        URL base = new URL(m3u8Url);
-                        segUrl = base.getProtocol() + "://" + base.getHost() + seg;
-                    } else {
-                        segUrl = baseUrl + seg;
-                    }
-
+                    String segUrl = resolveUrl(seg, baseUrl, m3u8Url);
                     try {
                         HttpURLConnection conn = openConnection(segUrl);
-                        int respCode = conn.getResponseCode();
-                        if (respCode == 200) {
+                        int code = conn.getResponseCode();
+                        if (code == 200) {
                             try (InputStream is = conn.getInputStream()) {
                                 int len;
-                                while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
+                                while ((len = is.read(buf)) > 0) {
+                                    fos.write(buf, 0, len);
+                                    totalBytes += len;
+                                }
                             }
+                        } else {
+                            failCount++;
                         }
                         conn.disconnect();
                     } catch (Exception segEx) {
-                        // Continuer même si un segment échoue
+                        failCount++;
                     }
-
                     count++;
                     final int pct = (int)(count * 100.0 / total);
-                    final int c = count;
+                    final long mb = totalBytes / (1024*1024);
+                    final int fc = failCount;
                     runOnUiThread(() -> {
                         pb.setProgress(pct);
-                        status.setText("⏳ " + c + "/" + total + " (" + pct + "%)");
+                        status.setText("⏳ " + count + "/" + total +
+                            " (" + pct + "%) — " + mb + " MB" +
+                            (fc > 0 ? " — ⚠️ " + fc + " échecs" : ""));
                     });
                 }
             }
 
-            // Vérifier que le fichier n'est pas vide
-            if (outFile.length() < 1024) {
-                outFile.delete();
-                runOnUiThread(() -> {
-                    btn.setEnabled(true);
-                    status.setText("❌ Fichier vide - segments inaccessibles");
-                });
+            if (totalBytes < 10240) {
+                out.delete();
+                // Afficher le 1er URL de segment pour diagnostic
+                String dbg = resolveUrl(segments.get(0), baseUrl, m3u8Url);
+                finishErr("Segments vides (0 bytes).\nURL seg: " + dbg, status, btn);
                 return;
             }
 
-            lastDownloadedFile = outFile;
-            addToHistory(fileName);
-            final long sizeMb = outFile.length() / (1024 * 1024);
-            runOnUiThread(() -> {
-                btn.setEnabled(true);
-                pb.setProgress(100);
-                status.setText("✅ Sauvegardé ! " + sizeMb + " MB\n" + fileName);
-                btnOpen.setVisibility(android.view.View.VISIBLE);
-            });
+            finishOk(out, fileName, status, btn, btnOpen, pb);
 
-        } catch (Exception e) {
-            runOnUiThread(() -> {
-                btn.setEnabled(true);
-                status.setText("❌ Erreur : " + e.getMessage());
-            });
-        }
+        } catch (Exception e) { finishErr(e.getMessage(), status, btn); }
     }
 
+    /* ── Parser m3u8 ── */
     private List<String> parseM3U8(String url) throws Exception {
         List<String> segments = new ArrayList<>();
-        String lastSubPlaylist = null;
+        String bestSubUrl = null;
+        long bestBandwidth = 0;
 
         HttpURLConnection conn = openConnection(url);
-        BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
         List<String> lines = new ArrayList<>();
-        String line;
-        while ((line = br.readLine()) != null) lines.add(line.trim());
-        br.close();
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(conn.getInputStream()))) {
+            String l;
+            while ((l = br.readLine()) != null) lines.add(l.trim());
+        }
         conn.disconnect();
 
-        boolean nextIsSegment = false;
-        for (String l : lines) {
+        String base = url.substring(0, url.lastIndexOf('/') + 1);
+        boolean nextSeg = false;
+
+        for (int i = 0; i < lines.size(); i++) {
+            String l = lines.get(i);
             if (l.isEmpty()) continue;
 
-            if (l.startsWith("#EXTINF")) {
-                // La ligne suivante non-commentaire est un segment
-                nextIsSegment = true;
-                continue;
-            }
-
+            // Playlist maître : prendre la qualité la plus haute
             if (l.startsWith("#EXT-X-STREAM-INF")) {
-                // Playlist maître, la prochaine ligne est une sous-playlist
-                nextIsSegment = true;
+                long bw = 0;
+                if (l.contains("BANDWIDTH=")) {
+                    try {
+                        String bwStr = l.split("BANDWIDTH=")[1].split("[,\\s]")[0];
+                        bw = Long.parseLong(bwStr);
+                    } catch (Exception ignored) {}
+                }
+                if (i + 1 < lines.size()) {
+                    String subLine = lines.get(i + 1).trim();
+                    if (!subLine.startsWith("#") && bw >= bestBandwidth) {
+                        bestBandwidth = bw;
+                        bestSubUrl = subLine;
+                    }
+                }
                 continue;
             }
 
+            if (l.startsWith("#EXTINF")) { nextSeg = true; continue; }
             if (l.startsWith("#")) continue;
 
-            // Ligne de données
-            if (nextIsSegment) {
-                if (l.endsWith(".m3u8") || l.contains(".m3u8?")) {
-                    lastSubPlaylist = l;
-                } else {
-                    segments.add(l);
-                }
-                nextIsSegment = false;
+            if (nextSeg) {
+                segments.add(l);
+                nextSeg = false;
             }
         }
 
-        // Si c'est une playlist maître, parser la sous-playlist
-        if (segments.isEmpty() && lastSubPlaylist != null) {
-            String base = url.substring(0, url.lastIndexOf('/') + 1);
-            String subUrl = (lastSubPlaylist.startsWith("http")) ?
-                lastSubPlaylist : base + lastSubPlaylist;
+        // Playlist maître → récursion sur meilleure qualité
+        if (segments.isEmpty() && bestSubUrl != null) {
+            String subUrl = bestSubUrl.startsWith("http") ? bestSubUrl : base + bestSubUrl;
             return parseM3U8(subUrl);
         }
 
         return segments;
     }
 
+    /* ── Helpers ── */
+    private String resolveUrl(String seg, String baseUrl, String m3u8Url) {
+        if (seg.startsWith("http://") || seg.startsWith("https://")) return seg;
+        if (seg.startsWith("/")) {
+            try {
+                URL u = new URL(m3u8Url);
+                return u.getProtocol() + "://" + u.getHost() + seg;
+            } catch (Exception e) { return baseUrl + seg; }
+        }
+        return baseUrl + seg;
+    }
+
     private HttpURLConnection openConnection(String urlStr) throws Exception {
         URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestProperty("User-Agent",
-            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36");
-        conn.setRequestProperty("Referer", "https://uqload.is/");
-        conn.setRequestProperty("Origin", "https://uqload.is");
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(60000);
-        conn.setInstanceFollowRedirects(true);
-        return conn;
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        c.setRequestProperty("User-Agent",
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
+            "Chrome/124.0.0.0 Mobile Safari/537.36");
+        c.setRequestProperty("Referer",  "https://uqload.is/");
+        c.setRequestProperty("Origin",   "https://uqload.is");
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(60000);
+        c.setInstanceFollowRedirects(true);
+        return c;
+    }
+
+    private void finishOk(File f, String name, TextView status,
+                          Button btn, Button btnOpen, ProgressBar pb) {
+        lastDownloadedFile = f;
+        addToHistory(name);
+        long mb = f.length() / (1024 * 1024);
+        runOnUiThread(() -> {
+            btn.setEnabled(true);
+            pb.setProgress(100);
+            status.setText("✅ " + mb + " MB sauvegardés !\n" + name);
+            btnOpen.setVisibility(android.view.View.VISIBLE);
+        });
+    }
+
+    private void finishErr(String msg, TextView status, Button btn) {
+        runOnUiThread(() -> {
+            btn.setEnabled(true);
+            status.setText("❌ " + msg);
+        });
     }
 
     private String getExtension(String url) {
-        for (String ext : new String[]{"mp4","mkv","avi","webm","mov","flv"}) {
-            if (url.contains("." + ext)) return ext;
-        }
+        for (String e : new String[]{"mp4","mkv","avi","webm","mov","flv"})
+            if (url.contains("."+e)) return e;
         return "mp4";
     }
 
     private String timestamp() {
-        return new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        return new SimpleDateFormat("yyyyMMdd_HHmmss",
+            Locale.getDefault()).format(new Date());
     }
 
     private void addToHistory(String name) {
         runOnUiThread(() -> {
             history.add(0, "✅ " + name);
-            if (history.size() > 20) history.remove(history.size() - 1);
+            if (history.size() > 20) history.remove(history.size()-1);
             historyAdapter.notifyDataSetChanged();
         });
     }
