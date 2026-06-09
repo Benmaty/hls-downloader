@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
 }
 android {
+    namespace "com.benmaty.hlsdownloader"
     compileSdk 34
     defaultConfig {
         applicationId "com.benmaty.hlsdownloader"
