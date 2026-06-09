@@ -6,13 +6,13 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
-import com.arthenica.mobileffmpeg.Config;
-import com.arthenica.mobileffmpeg.FFmpeg;
+import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -26,23 +26,57 @@ public class MainActivity extends AppCompatActivity {
             String url = urlInput.getText().toString().trim();
             if (url.isEmpty()) { status.setText("⚠️ Colle un lien !"); return; }
 
-            String fileName = "video_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date()) + ".mp4";
-            String outputPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) + "/" + fileName;
+            String fileName = "video_" + new SimpleDateFormat("yyyyMMdd_HHmmss",
+                Locale.getDefault()).format(new Date()) + ".mp4";
+            String outputPath = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS) + "/" + fileName;
 
             status.setText("⏳ Téléchargement...");
             btnDownload.setEnabled(false);
 
             new Thread(() -> {
-                int rc = FFmpeg.execute(
-                    "-user_agent \"Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36\" " +
-                    "-headers \"Referer: https://uqload.is/\r\nOrigin: https://uqload.is\" " +
-                    "-i \"" + url + "\" -c copy \"" + outputPath + "\""
-                );
-                runOnUiThread(() -> {
-                    btnDownload.setEnabled(true);
-                    if (rc == 0) status.setText("✅ Sauvegardé !\n" + fileName);
-                    else status.setText("❌ Erreur code : " + rc);
-                });
+                try {
+                    // Copier ffmpeg depuis assets vers un fichier exécutable
+                    File ffmpegFile = new File(getFilesDir(), "ffmpeg");
+                    if (!ffmpegFile.exists()) {
+                        try (InputStream is = getAssets().open("ffmpeg");
+                             FileOutputStream fos = new FileOutputStream(ffmpegFile)) {
+                            byte[] buf = new byte[4096];
+                            int len;
+                            while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
+                        }
+                        ffmpegFile.setExecutable(true);
+                    }
+
+                    ProcessBuilder pb = new ProcessBuilder(
+                        ffmpegFile.getAbsolutePath(),
+                        "-user_agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36",
+                        "-headers", "Referer: https://uqload.is/\r\nOrigin: https://uqload.is",
+                        "-i", url,
+                        "-c", "copy",
+                        outputPath
+                    );
+                    pb.redirectErrorStream(true);
+                    Process p = pb.start();
+
+                    StringBuilder log = new StringBuilder();
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                        String line;
+                        while ((line = br.readLine()) != null) log.append(line).append("\n");
+                    }
+                    int rc = p.waitFor();
+
+                    runOnUiThread(() -> {
+                        btnDownload.setEnabled(true);
+                        if (rc == 0) status.setText("✅ Sauvegardé !\n" + fileName);
+                        else status.setText("❌ Erreur :\n" + log.substring(Math.max(0, log.length()-300)));
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        btnDownload.setEnabled(true);
+                        status.setText("❌ Exception : " + e.getMessage());
+                    });
+                }
             }).start();
         });
     }
