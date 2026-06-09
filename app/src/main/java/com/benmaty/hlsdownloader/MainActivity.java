@@ -13,6 +13,8 @@ import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
 
+    private File ffmpegFile;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -21,6 +23,18 @@ public class MainActivity extends AppCompatActivity {
         EditText urlInput = findViewById(R.id.urlInput);
         Button btnDownload = findViewById(R.id.btnDownload);
         TextView status = findViewById(R.id.status);
+
+        // Copier ffmpeg dans getCacheDir() qui est exécutable
+        ffmpegFile = new File(getCacheDir(), "ffmpeg");
+        try {
+            if (!ffmpegFile.exists()) {
+                copyFfmpeg();
+            }
+            // Re-set executable au cas où
+            Runtime.getRuntime().exec("chmod 755 " + ffmpegFile.getAbsolutePath()).waitFor();
+        } catch (Exception e) {
+            status.setText("❌ Init ffmpeg : " + e.getMessage());
+        }
 
         btnDownload.setOnClickListener(v -> {
             String url = urlInput.getText().toString().trim();
@@ -36,31 +50,26 @@ public class MainActivity extends AppCompatActivity {
 
             new Thread(() -> {
                 try {
-                    // Copier ffmpeg depuis assets vers un fichier exécutable
-                    File ffmpegFile = new File(getFilesDir(), "ffmpeg");
-                    if (!ffmpegFile.exists()) {
-                        try (InputStream is = getAssets().open("ffmpeg");
-                             FileOutputStream fos = new FileOutputStream(ffmpegFile)) {
-                            byte[] buf = new byte[4096];
-                            int len;
-                            while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
-                        }
-                        ffmpegFile.setExecutable(true);
-                    }
+                    // S'assurer que ffmpeg est exécutable
+                    ffmpegFile.setExecutable(true, false);
 
                     ProcessBuilder pb = new ProcessBuilder(
                         ffmpegFile.getAbsolutePath(),
-                        "-user_agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36",
-                        "-headers", "Referer: https://uqload.is/\r\nOrigin: https://uqload.is",
+                        "-user_agent",
+                        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36",
+                        "-headers",
+                        "Referer: https://uqload.is/\r\nOrigin: https://uqload.is",
                         "-i", url,
                         "-c", "copy",
                         outputPath
                     );
                     pb.redirectErrorStream(true);
+                    pb.environment().put("LD_LIBRARY_PATH", getCacheDir().getAbsolutePath());
                     Process p = pb.start();
 
                     StringBuilder log = new StringBuilder();
-                    try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    try (BufferedReader br = new BufferedReader(
+                            new InputStreamReader(p.getInputStream()))) {
                         String line;
                         while ((line = br.readLine()) != null) log.append(line).append("\n");
                     }
@@ -69,7 +78,8 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         btnDownload.setEnabled(true);
                         if (rc == 0) status.setText("✅ Sauvegardé !\n" + fileName);
-                        else status.setText("❌ Erreur :\n" + log.substring(Math.max(0, log.length()-300)));
+                        else status.setText("❌ Erreur :\n" +
+                            log.substring(Math.max(0, log.length() - 400)));
                     });
                 } catch (Exception e) {
                     runOnUiThread(() -> {
@@ -79,5 +89,15 @@ public class MainActivity extends AppCompatActivity {
                 }
             }).start();
         });
+    }
+
+    private void copyFfmpeg() throws IOException {
+        try (InputStream is = getAssets().open("ffmpeg");
+             FileOutputStream fos = new FileOutputStream(ffmpegFile)) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
+        }
+        ffmpegFile.setExecutable(true, false);
     }
 }
