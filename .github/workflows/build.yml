@@ -19,23 +19,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Gradle
+      - name: Install Gradle 8.2
         run: |
           wget -q https://services.gradle.org/distributions/gradle-8.2-bin.zip
           unzip -q gradle-8.2-bin.zip
           sudo mv gradle-8.2 /opt/gradle
           echo "/opt/gradle/bin" >> $GITHUB_PATH
 
-      - name: Generate Gradle Wrapper
+      - name: Generate Wrapper & Build
         run: |
-          cd $GITHUB_WORKSPACE
           gradle wrapper
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Build APK
-        run: ./gradlew assembleRelease
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
