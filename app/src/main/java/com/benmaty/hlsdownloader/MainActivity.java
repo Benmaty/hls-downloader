@@ -118,48 +118,83 @@ public class MainActivity extends AppCompatActivity {
     private void downloadHLS(String m3u8Url, TextView status, Button btn,
                                Button btnOpen, ProgressBar pb) {
         try {
-            String fileName = "video_" + timestamp() + ".mp4";
-            File outFile = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), fileName);
-
+            // Étape 1 : récupérer les segments
+            runOnUiThread(() -> status.setText("⏳ Lecture du m3u8..."));
             List<String> segments = parseM3U8(m3u8Url);
+
             if (segments.isEmpty()) {
                 runOnUiThread(() -> {
                     btn.setEnabled(true);
-                    status.setText("❌ Aucun segment trouvé");
+                    status.setText("❌ Aucun segment trouvé dans le m3u8");
                 });
                 return;
             }
 
+            runOnUiThread(() -> status.setText("⏳ " + segments.size() + " segments trouvés..."));
+
+            String fileName = "video_" + timestamp() + ".mp4";
+            File outFile = new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS), fileName);
+
+            String baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+
             try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                String baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
                 byte[] buf = new byte[8192];
                 int count = 0, total = segments.size();
 
                 for (String seg : segments) {
-                    String segUrl = seg.startsWith("http") ? seg : baseUrl + seg;
-                    HttpURLConnection conn = openConnection(segUrl);
-                    try (InputStream is = conn.getInputStream()) {
-                        int len;
-                        while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
+                    // Construire l'URL absolue du segment
+                    String segUrl;
+                    if (seg.startsWith("http://") || seg.startsWith("https://")) {
+                        segUrl = seg;
+                    } else if (seg.startsWith("/")) {
+                        URL base = new URL(m3u8Url);
+                        segUrl = base.getProtocol() + "://" + base.getHost() + seg;
+                    } else {
+                        segUrl = baseUrl + seg;
                     }
-                    conn.disconnect();
+
+                    try {
+                        HttpURLConnection conn = openConnection(segUrl);
+                        int respCode = conn.getResponseCode();
+                        if (respCode == 200) {
+                            try (InputStream is = conn.getInputStream()) {
+                                int len;
+                                while ((len = is.read(buf)) > 0) fos.write(buf, 0, len);
+                            }
+                        }
+                        conn.disconnect();
+                    } catch (Exception segEx) {
+                        // Continuer même si un segment échoue
+                    }
+
                     count++;
                     final int pct = (int)(count * 100.0 / total);
                     final int c = count;
                     runOnUiThread(() -> {
                         pb.setProgress(pct);
-                        status.setText("⏳ " + c + "/" + total + " segments (" + pct + "%)");
+                        status.setText("⏳ " + c + "/" + total + " (" + pct + "%)");
                     });
                 }
             }
 
+            // Vérifier que le fichier n'est pas vide
+            if (outFile.length() < 1024) {
+                outFile.delete();
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    status.setText("❌ Fichier vide - segments inaccessibles");
+                });
+                return;
+            }
+
             lastDownloadedFile = outFile;
             addToHistory(fileName);
+            final long sizeMb = outFile.length() / (1024 * 1024);
             runOnUiThread(() -> {
                 btn.setEnabled(true);
                 pb.setProgress(100);
-                status.setText("✅ Sauvegardé !\n" + fileName);
+                status.setText("✅ Sauvegardé ! " + sizeMb + " MB\n" + fileName);
                 btnOpen.setVisibility(android.view.View.VISIBLE);
             });
 
@@ -173,28 +208,53 @@ public class MainActivity extends AppCompatActivity {
 
     private List<String> parseM3U8(String url) throws Exception {
         List<String> segments = new ArrayList<>();
+        String lastSubPlaylist = null;
+
         HttpURLConnection conn = openConnection(url);
-        String lastSub = null;
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(conn.getInputStream()))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) {
-                    if (line.contains("URI=")) {
-                        // Segment chiffré, on continue quand même
-                    }
-                    continue;
+        BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+        List<String> lines = new ArrayList<>();
+        String line;
+        while ((line = br.readLine()) != null) lines.add(line.trim());
+        br.close();
+        conn.disconnect();
+
+        boolean nextIsSegment = false;
+        for (String l : lines) {
+            if (l.isEmpty()) continue;
+
+            if (l.startsWith("#EXTINF")) {
+                // La ligne suivante non-commentaire est un segment
+                nextIsSegment = true;
+                continue;
+            }
+
+            if (l.startsWith("#EXT-X-STREAM-INF")) {
+                // Playlist maître, la prochaine ligne est une sous-playlist
+                nextIsSegment = true;
+                continue;
+            }
+
+            if (l.startsWith("#")) continue;
+
+            // Ligne de données
+            if (nextIsSegment) {
+                if (l.endsWith(".m3u8") || l.contains(".m3u8?")) {
+                    lastSubPlaylist = l;
+                } else {
+                    segments.add(l);
                 }
-                if (line.endsWith(".m3u8")) lastSub = line;
-                else segments.add(line);
+                nextIsSegment = false;
             }
         }
-        conn.disconnect();
-        if (segments.isEmpty() && lastSub != null) {
+
+        // Si c'est une playlist maître, parser la sous-playlist
+        if (segments.isEmpty() && lastSubPlaylist != null) {
             String base = url.substring(0, url.lastIndexOf('/') + 1);
-            return parseM3U8(lastSub.startsWith("http") ? lastSub : base + lastSub);
+            String subUrl = (lastSubPlaylist.startsWith("http")) ?
+                lastSubPlaylist : base + lastSubPlaylist;
+            return parseM3U8(subUrl);
         }
+
         return segments;
     }
 
@@ -206,16 +266,15 @@ public class MainActivity extends AppCompatActivity {
         conn.setRequestProperty("Referer", "https://uqload.is/");
         conn.setRequestProperty("Origin", "https://uqload.is");
         conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
+        conn.setReadTimeout(60000);
+        conn.setInstanceFollowRedirects(true);
         return conn;
     }
 
     private String getExtension(String url) {
-        if (url.contains(".mp4")) return "mp4";
-        if (url.contains(".mkv")) return "mkv";
-        if (url.contains(".avi")) return "avi";
-        if (url.contains(".webm")) return "webm";
-        if (url.contains(".mov")) return "mov";
+        for (String ext : new String[]{"mp4","mkv","avi","webm","mov","flv"}) {
+            if (url.contains("." + ext)) return ext;
+        }
         return "mp4";
     }
 
