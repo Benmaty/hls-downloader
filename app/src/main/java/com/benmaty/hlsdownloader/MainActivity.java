@@ -45,7 +45,6 @@ public class MainActivity extends AppCompatActivity {
             android.R.layout.simple_list_item_1, history);
         historyList.setAdapter(historyAdapter);
 
-        // Sélecteur de dossier
         folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(),
             uri -> {
@@ -100,11 +99,9 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    /* ── Résoudre le nom de fichier ── */
     private String resolveFileName(String defaultName) {
         String custom = fileNameInput.getText().toString().trim();
         if (!custom.isEmpty()) {
-            // Ajouter l'extension si absente
             if (!custom.contains(".")) {
                 String ext = defaultName.contains(".")
                     ? defaultName.substring(defaultName.lastIndexOf('.'))
@@ -116,20 +113,11 @@ public class MainActivity extends AppCompatActivity {
         return defaultName;
     }
 
-    /* ── Résoudre le dossier de destination ── */
     private File resolveOutputFile(String fileName) {
-        if (selectedFolderUri != null) {
-            // Dossier choisi par l'utilisateur via SAF
-            String docId = DocumentsContract.getTreeDocumentId(selectedFolderUri);
-            // On retombe sur Downloads si le chemin SAF n'est pas mappable en File
-            // (cas des stockages externes chiffrés)
-        }
-        // Par défaut : Downloads
         return new File(Environment.getExternalStoragePublicDirectory(
             Environment.DIRECTORY_DOWNLOADS), fileName);
     }
 
-    /* ── Téléchargement direct (mp4, mkv…) ── */
     private void downloadDirect(String urlStr, TextView status, Button btn,
                                 Button btnOpen, ProgressBar pb) {
         try {
@@ -142,13 +130,18 @@ public class MainActivity extends AppCompatActivity {
             int total = conn.getContentLength();
             try (InputStream is = conn.getInputStream();
                  FileOutputStream fos = new FileOutputStream(out)) {
-                byte[] buf = new byte[8192]; int len, dl = 0;
+                byte[] buf = new byte[8192];
+                int len;
+                long dl = 0;
                 while ((len = is.read(buf)) > 0) {
-                    fos.write(buf, 0, len); dl += len;
+                    fos.write(buf, 0, len);
+                    dl += len;
                     if (total > 0) {
-                        int pct = (int)(dl * 100L / total);
-                        runOnUiThread(() -> { pb.setProgress(pct);
-                            status.setText("⏳ " + pct + "%"); });
+                        final int pct = (int)(dl * 100L / total);
+                        runOnUiThread(() -> {
+                            pb.setProgress(pct);
+                            status.setText("⏳ " + pct + "%");
+                        });
                     }
                 }
             }
@@ -156,7 +149,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) { finishErr(e.getMessage(), status, btn); }
     }
 
-    /* ── Téléchargement HLS ── */
     private void downloadHLS(String m3u8Url, TextView status, Button btn,
                              Button btnOpen, ProgressBar pb) {
         try {
@@ -169,8 +161,8 @@ public class MainActivity extends AppCompatActivity {
 
             String firstSeg = segments.get(0);
             runOnUiThread(() -> status.setText(
-                "🔍 " + segments.size() + " segments\n1er: " + firstSeg.substring(
-                    Math.max(0, firstSeg.length()-60))));
+                "🔍 " + segments.size() + " segments\n1er: " +
+                firstSeg.substring(Math.max(0, firstSeg.length()-60))));
 
             Thread.sleep(2000);
 
@@ -181,16 +173,15 @@ public class MainActivity extends AppCompatActivity {
             String baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
             byte[] buf = new byte[16384];
             long totalBytes = 0;
-            int count = 0, total = segments.size();
+            int total = segments.size();
             int failCount = 0;
 
             try (FileOutputStream fos = new FileOutputStream(out)) {
-                for (String seg : segments) {
-                    String segUrl = resolveUrl(seg, baseUrl, m3u8Url);
+                for (int i = 0; i < segments.size(); i++) {
+                    String segUrl = resolveUrl(segments.get(i), baseUrl, m3u8Url);
                     try {
                         HttpURLConnection conn = openConnection(segUrl);
-                        int code = conn.getResponseCode();
-                        if (code == 200) {
+                        if (conn.getResponseCode() == 200) {
                             try (InputStream is = conn.getInputStream()) {
                                 int len;
                                 while ((len = is.read(buf)) > 0) {
@@ -201,13 +192,15 @@ public class MainActivity extends AppCompatActivity {
                         } else { failCount++; }
                         conn.disconnect();
                     } catch (Exception segEx) { failCount++; }
-                    count++;
-                    final int pct = (int)(count * 100.0 / total);
-                    final long mb = totalBytes / (1024*1024);
+
+                    // ✅ Variables final pour le lambda
+                    final int currentCount = i + 1;
+                    final int pct = (int)(currentCount * 100.0 / total);
+                    final long mb = totalBytes / (1024 * 1024);
                     final int fc = failCount;
                     runOnUiThread(() -> {
                         pb.setProgress(pct);
-                        status.setText("⏳ " + count + "/" + total +
+                        status.setText("⏳ " + currentCount + "/" + total +
                             " (" + pct + "%) — " + mb + " MB" +
                             (fc > 0 ? " — ⚠️ " + fc + " échecs" : ""));
                     });
@@ -217,7 +210,7 @@ public class MainActivity extends AppCompatActivity {
             if (totalBytes < 10240) {
                 out.delete();
                 String dbg = resolveUrl(segments.get(0), baseUrl, m3u8Url);
-                finishErr("Segments vides (0 bytes).\nURL seg: " + dbg, status, btn);
+                finishErr("Segments vides.\nURL: " + dbg, status, btn);
                 return;
             }
 
@@ -226,7 +219,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) { finishErr(e.getMessage(), status, btn); }
     }
 
-    /* ── Parser m3u8 ── */
     private List<String> parseM3U8(String url) throws Exception {
         List<String> segments = new ArrayList<>();
         String bestSubUrl = null;
@@ -276,7 +268,6 @@ public class MainActivity extends AppCompatActivity {
         return segments;
     }
 
-    /* ── Helpers ── */
     private String resolveUrl(String seg, String baseUrl, String m3u8Url) {
         if (seg.startsWith("http://") || seg.startsWith("https://")) return seg;
         if (seg.startsWith("/")) {
@@ -294,8 +285,8 @@ public class MainActivity extends AppCompatActivity {
         c.setRequestProperty("User-Agent",
             "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 " +
             "Chrome/124.0.0.0 Mobile Safari/537.36");
-        c.setRequestProperty("Referer",  "https://uqload.is/");
-        c.setRequestProperty("Origin",   "https://uqload.is");
+        c.setRequestProperty("Referer", "https://uqload.is/");
+        c.setRequestProperty("Origin",  "https://uqload.is");
         c.setConnectTimeout(15000);
         c.setReadTimeout(60000);
         c.setInstanceFollowRedirects(true);
