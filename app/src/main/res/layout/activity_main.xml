@@ -22,11 +22,27 @@
         android:inputType="textUri"
         android:layout_marginBottom="8dp"/>
 
+    <EditText
+        android:id="@+id/fileNameInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Nom du fichier (optionnel)"
+        android:inputType="text"
+        android:layout_marginBottom="8dp"/>
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:layout_marginBottom="8dp">
+
+        <Button
+            android:id="@+id/btnChooseFolder"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="📁 Dossier"
+            android:layout_marginEnd="4dp"/>
 
         <Button
             android:id="@+id/btnPaste"
@@ -43,6 +59,15 @@
             android:layout_weight="2"
             android:text="⬇️ Télécharger"/>
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/selectedFolderText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="📂 Dossier : Downloads (par défaut)"
+        android:textSize="12sp"
+        android:textColor="#888888"
+        android:layout_marginBottom="8dp"/>
 
     <ProgressBar
         android:id="@+id/progressBar"

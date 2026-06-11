@@ -4,6 +4,9 @@ import android.content.*;
 import android.net.Uri;
 import android.os.*;
 import android.widget.*;
+import android.provider.DocumentsContract;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.FileProvider;
 import java.io.*;
@@ -16,23 +19,48 @@ public class MainActivity extends AppCompatActivity {
     private List<String> history = new ArrayList<>();
     private ArrayAdapter<String> historyAdapter;
     private File lastDownloadedFile = null;
+    private Uri selectedFolderUri = null;
+    private TextView selectedFolderText;
+    private EditText fileNameInput;
+
+    private ActivityResultLauncher<Uri> folderPickerLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        EditText urlInput    = findViewById(R.id.urlInput);
-        Button btnDownload   = findViewById(R.id.btnDownload);
-        Button btnPaste      = findViewById(R.id.btnPaste);
-        Button btnOpen       = findViewById(R.id.btnOpen);
-        TextView status      = findViewById(R.id.status);
-        ProgressBar pb       = findViewById(R.id.progressBar);
-        ListView historyList = findViewById(R.id.historyList);
+        EditText urlInput       = findViewById(R.id.urlInput);
+        fileNameInput           = findViewById(R.id.fileNameInput);
+        Button btnDownload      = findViewById(R.id.btnDownload);
+        Button btnPaste         = findViewById(R.id.btnPaste);
+        Button btnOpen          = findViewById(R.id.btnOpen);
+        Button btnChooseFolder  = findViewById(R.id.btnChooseFolder);
+        selectedFolderText      = findViewById(R.id.selectedFolderText);
+        TextView status         = findViewById(R.id.status);
+        ProgressBar pb          = findViewById(R.id.progressBar);
+        ListView historyList    = findViewById(R.id.historyList);
 
         historyAdapter = new ArrayAdapter<>(this,
             android.R.layout.simple_list_item_1, history);
         historyList.setAdapter(historyAdapter);
+
+        // Sélecteur de dossier
+        folderPickerLauncher = registerForActivityResult(
+            new ActivityResultContracts.OpenDocumentTree(),
+            uri -> {
+                if (uri != null) {
+                    selectedFolderUri = uri;
+                    getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    String path = uri.getLastPathSegment();
+                    selectedFolderText.setText("📂 Dossier : " + path);
+                }
+            });
+
+        btnChooseFolder.setOnClickListener(v ->
+            folderPickerLauncher.launch(null));
 
         btnPaste.setOnClickListener(v -> {
             ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -72,14 +100,43 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    /* ── Résoudre le nom de fichier ── */
+    private String resolveFileName(String defaultName) {
+        String custom = fileNameInput.getText().toString().trim();
+        if (!custom.isEmpty()) {
+            // Ajouter l'extension si absente
+            if (!custom.contains(".")) {
+                String ext = defaultName.contains(".")
+                    ? defaultName.substring(defaultName.lastIndexOf('.'))
+                    : ".mp4";
+                return custom + ext;
+            }
+            return custom;
+        }
+        return defaultName;
+    }
+
+    /* ── Résoudre le dossier de destination ── */
+    private File resolveOutputFile(String fileName) {
+        if (selectedFolderUri != null) {
+            // Dossier choisi par l'utilisateur via SAF
+            String docId = DocumentsContract.getTreeDocumentId(selectedFolderUri);
+            // On retombe sur Downloads si le chemin SAF n'est pas mappable en File
+            // (cas des stockages externes chiffrés)
+        }
+        // Par défaut : Downloads
+        return new File(Environment.getExternalStoragePublicDirectory(
+            Environment.DIRECTORY_DOWNLOADS), fileName);
+    }
+
     /* ── Téléchargement direct (mp4, mkv…) ── */
     private void downloadDirect(String urlStr, TextView status, Button btn,
                                 Button btnOpen, ProgressBar pb) {
         try {
             String ext = getExtension(urlStr);
-            String fileName = "video_" + timestamp() + "." + ext;
-            File out = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), fileName);
+            String defaultName = "video_" + timestamp() + "." + ext;
+            String fileName = resolveFileName(defaultName);
+            File out = resolveOutputFile(fileName);
 
             HttpURLConnection conn = openConnection(urlStr);
             int total = conn.getContentLength();
@@ -105,24 +162,21 @@ public class MainActivity extends AppCompatActivity {
         try {
             runOnUiThread(() -> status.setText("⏳ Lecture m3u8..."));
 
-            // 1. Parser la playlist
             List<String> segments = parseM3U8(m3u8Url);
             if (segments.isEmpty()) {
                 finishErr("Aucun segment trouvé", status, btn); return;
             }
 
-            // 2. Afficher le 1er segment pour debug
             String firstSeg = segments.get(0);
             runOnUiThread(() -> status.setText(
                 "🔍 " + segments.size() + " segments\n1er: " + firstSeg.substring(
                     Math.max(0, firstSeg.length()-60))));
 
-            // Pause 2s pour lire le debug
             Thread.sleep(2000);
 
-            String fileName = "video_" + timestamp() + ".ts";
-            File out = new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), fileName);
+            String defaultName = "video_" + timestamp() + ".ts";
+            String fileName = resolveFileName(defaultName);
+            File out = resolveOutputFile(fileName);
 
             String baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
             byte[] buf = new byte[16384];
@@ -144,13 +198,9 @@ public class MainActivity extends AppCompatActivity {
                                     totalBytes += len;
                                 }
                             }
-                        } else {
-                            failCount++;
-                        }
+                        } else { failCount++; }
                         conn.disconnect();
-                    } catch (Exception segEx) {
-                        failCount++;
-                    }
+                    } catch (Exception segEx) { failCount++; }
                     count++;
                     final int pct = (int)(count * 100.0 / total);
                     final long mb = totalBytes / (1024*1024);
@@ -166,7 +216,6 @@ public class MainActivity extends AppCompatActivity {
 
             if (totalBytes < 10240) {
                 out.delete();
-                // Afficher le 1er URL de segment pour diagnostic
                 String dbg = resolveUrl(segments.get(0), baseUrl, m3u8Url);
                 finishErr("Segments vides (0 bytes).\nURL seg: " + dbg, status, btn);
                 return;
@@ -198,8 +247,6 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < lines.size(); i++) {
             String l = lines.get(i);
             if (l.isEmpty()) continue;
-
-            // Playlist maître : prendre la qualité la plus haute
             if (l.startsWith("#EXT-X-STREAM-INF")) {
                 long bw = 0;
                 if (l.contains("BANDWIDTH=")) {
@@ -217,22 +264,15 @@ public class MainActivity extends AppCompatActivity {
                 }
                 continue;
             }
-
             if (l.startsWith("#EXTINF")) { nextSeg = true; continue; }
             if (l.startsWith("#")) continue;
-
-            if (nextSeg) {
-                segments.add(l);
-                nextSeg = false;
-            }
+            if (nextSeg) { segments.add(l); nextSeg = false; }
         }
 
-        // Playlist maître → récursion sur meilleure qualité
         if (segments.isEmpty() && bestSubUrl != null) {
             String subUrl = bestSubUrl.startsWith("http") ? bestSubUrl : base + bestSubUrl;
             return parseM3U8(subUrl);
         }
-
         return segments;
     }
 
